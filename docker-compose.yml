@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-meddler}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meddler}
+      POSTGRES_DB: ${POSTGRES_DB:-meddler}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meddler"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  meddler:
+    build:
+      context: .
+      target: server
+    environment:
+      DATABASE_URL: postgres://meddler:meddler@postgres:5432/meddler
+      MEDDLER_HOST: 0.0.0.0
+      MEDDLER_PORT: "3000"
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  researcher:
+    build:
+      context: .
+      target: agent
+    environment:
+      MEDDLER_URL: http://meddler:3000
+      AGENT_NAME: researcher
+      AGENT_DESC: "Research agent that searches and summarizes information"
+      AGENT_MODE: mock
+      # To use a real LLM, replace AGENT_MODE with:
+      # LLM_URL: http://host.docker.internal:11434/v1
+      # LLM_MODEL: qwen3:32b
+    restart: unless-stopped
+    depends_on:
+      meddler:
+        condition: service_healthy
+
+  scrutinizer:
+    build:
+      context: .
+      target: agent
+    environment:
+      MEDDLER_URL: http://meddler:3000
+      AGENT_NAME: scrutinizer
+      AGENT_DESC: "Reviews plans and code for issues, edge cases, and improvements"
+      AGENT_MODE: mock
+    restart: unless-stopped
+    depends_on:
+      meddler:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

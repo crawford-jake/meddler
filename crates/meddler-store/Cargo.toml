@@ -1,0 +1,15 @@
+[package]
+name = "meddler-store"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+meddler-core = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

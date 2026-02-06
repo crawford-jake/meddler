@@ -1,0 +1,27 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo lock is committed for binaries
+# Cargo.lock
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Docker
+postgres_data/
+
+# SQLx offline query data
+.sqlx/
