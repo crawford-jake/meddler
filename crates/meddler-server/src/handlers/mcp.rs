@@ -3,8 +3,10 @@ use std::convert::Infallible;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::sse::{Event, KeepAlive},
-    response::Sse,
+    response::{
+        sse::{Event, KeepAlive},
+        IntoResponse, Response, Sse,
+    },
     Json,
 };
 use serde_json::Value;
@@ -15,16 +17,13 @@ use meddler_mcp::jsonrpc::{INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
 use meddler_mcp::{JsonRpcRequest, JsonRpcResponse, ToolRegistry};
 
 use crate::app_state::AppState;
-use crate::session::SseEvent;
 
 const MCP_ORCHESTRATOR_NAME: &str = "__orchestrator__";
 
 /// SSE stream for the orchestrator (Cursor/Claude Desktop).
 ///
-/// Per the MCP SSE transport spec:
-/// 1. Server sends `event: endpoint` with the POST URL
-/// 2. Client POSTs JSON-RPC to that URL
-/// 3. Server sends responses back via SSE `event: message`
+/// Kept for the legacy MCP SSE transport. The primary transport is now
+/// Streamable HTTP (POST to the same URL returns JSON directly).
 pub async fn mcp_sse(
     State(state): State<AppState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
@@ -41,73 +40,73 @@ pub async fn mcp_sse(
 
     let rx = state.sessions.subscribe(MCP_ORCHESTRATOR_NAME).await;
 
-    // Send initial endpoint event as required by MCP SSE spec
-    let init_stream =
-        tokio_stream::once(Ok(Event::default().event("endpoint").data("/mcp")));
+    // Send initial endpoint event as required by MCP SSE spec.
+    // The endpoint tells the client where to POST JSON-RPC requests.
+    let init_stream = tokio_stream::once(Ok(Event::default()
+        .event("endpoint")
+        .data("/mcp/sse")));
 
-    let event_stream = BroadcastStream::new(rx).filter_map(|result| {
-        result.ok().map(|evt| match evt {
-            SseEvent::JsonRpc(value) => Ok(Event::default()
+    let message_stream = BroadcastStream::new(rx).filter_map(|result| {
+        result.ok().map(|msg| {
+            // Wrap message as an MCP notification
+            let notification = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/message",
+                "params": {
+                    "message": *msg,
+                }
+            });
+            Ok(Event::default()
                 .event("message")
-                .json_data(&value)
-                .unwrap_or_else(|_| Event::default().data("error serializing response"))),
-            SseEvent::AgentMessage(msg) => {
-                let notification = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "notifications/message",
-                    "params": {
-                        "message": *msg,
-                    }
-                });
-                Ok(Event::default()
-                    .event("message")
-                    .json_data(&notification)
-                    .unwrap_or_else(|_| Event::default().data("error")))
-            }
+                .json_data(&notification)
+                .unwrap_or_else(|_| Event::default().data("error")))
         })
     });
 
-    let stream = init_stream.chain(event_stream);
+    let stream = init_stream.chain(message_stream);
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-/// Handle MCP JSON-RPC requests from the orchestrator.
+/// Handle MCP JSON-RPC requests from the orchestrator (Streamable HTTP).
 ///
-/// Per MCP SSE spec: accepts POST, returns 202, sends response via SSE.
+/// Returns JSON-RPC response directly in the HTTP body for requests,
+/// or 202 Accepted for notifications (no `id` field).
 #[allow(clippy::missing_errors_doc)]
 pub async fn mcp_request(
     State(state): State<AppState>,
     Json(req): Json<JsonRpcRequest>,
-) -> StatusCode {
-    let request_id = req.id.clone();
+) -> Response {
+    tracing::info!("MCP request: method={}", req.method);
 
     // Handle notifications (no id / null id) - no response needed
-    if request_id.is_null() {
+    if req.id.is_null() {
         tracing::info!("Received MCP notification: {}", req.method);
-        return StatusCode::ACCEPTED;
+        return StatusCode::ACCEPTED.into_response();
     }
 
-    // Process the request
+    // Handle notifications/initialized (has id but is an ack, return empty success)
+    if req.method == "notifications/initialized" {
+        return StatusCode::ACCEPTED.into_response();
+    }
+
+    // Ensure orchestrator agent is registered
+    let _ = state
+        .agent_registry
+        .register(meddler_core::types::RegisterAgent {
+            name: MCP_ORCHESTRATOR_NAME.to_string(),
+            description: "MCP orchestrator (Cursor/Claude Desktop)".to_string(),
+        })
+        .await;
+
     let response = match req.method.as_str() {
         "initialize" => handle_initialize(&req),
-        "notifications/initialized" => {
-            // Client acknowledgement, no response needed
-            return StatusCode::ACCEPTED;
-        }
         "tools/list" => handle_tools_list(&req),
         "tools/call" => handle_tools_call(&state, &req).await,
         _ => JsonRpcResponse::error(req.id, METHOD_NOT_FOUND, "Method not found"),
     };
 
-    // Send the response through the SSE stream
-    let response_value = serde_json::to_value(&response).unwrap_or_default();
-    state
-        .sessions
-        .send_jsonrpc(MCP_ORCHESTRATOR_NAME, response_value)
-        .await;
-
-    StatusCode::ACCEPTED
+    Json(response).into_response()
 }
 
 fn handle_initialize(req: &JsonRpcRequest) -> JsonRpcResponse {
@@ -180,17 +179,19 @@ async fn tool_list_agents(state: &AppState) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
 
     // Filter out the internal orchestrator agent
-    let agents: Vec<_> = agents
-        .into_iter()
-        .filter(|a| a.name != MCP_ORCHESTRATOR_NAME)
-        .map(|a| {
-            serde_json::json!({
-                "name": a.name,
-                "description": a.description,
-                "connected": false, // TODO: check session manager
-            })
-        })
-        .collect();
+    let mut agent_list = Vec::new();
+    for a in agents {
+        if a.name == MCP_ORCHESTRATOR_NAME {
+            continue;
+        }
+        let connected = state.sessions.is_connected(&a.name).await;
+        agent_list.push(serde_json::json!({
+            "name": a.name,
+            "description": a.description,
+            "connected": connected,
+        }));
+    }
+    let agents = agent_list;
 
     Ok(serde_json::json!({ "agents": agents }))
 }

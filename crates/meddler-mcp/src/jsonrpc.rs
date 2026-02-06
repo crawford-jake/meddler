@@ -2,9 +2,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A JSON-RPC 2.0 request.
+///
+/// The `id` field defaults to `null` when absent, which indicates a notification
+/// (per JSON-RPC 2.0 spec, notifications have no `id`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
+    #[serde(default)]
     pub id: Value,
     pub method: String,
     #[serde(default)]

@@ -195,3 +195,39 @@ async fn mcp_unknown_method() {
     assert!(body.get("error").is_some());
     assert_eq!(body["error"]["code"], -32601);
 }
+
+#[tokio::test]
+async fn mcp_streamable_http_initialize() {
+    let server = build_test_app();
+
+    // POST to /mcp/sse (Streamable HTTP transport) should work the same as /mcp
+    let resp = server
+        .post("/mcp/sse")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        }))
+        .await;
+
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["result"]["serverInfo"]["name"], "meddler");
+}
+
+#[tokio::test]
+async fn mcp_notification_returns_accepted() {
+    let server = build_test_app();
+
+    // Notifications have null id and should return 202 Accepted
+    let resp = server
+        .post("/mcp/sse")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .await;
+
+    resp.assert_status(axum::http::StatusCode::ACCEPTED);
+}

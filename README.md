@@ -1,22 +1,19 @@
 # Meddler
 
-AI agent orchestration transport layer. Think Polytopia: the orchestrator agent is the player who moves each piece one by one. Agents don't talk to each other - the orchestrator manually shuttles information between them.
+Meddler is a transport layer for AI agent orchestration. It lets a single orchestrator agent (running in your IDE via MCP) coordinate multiple specialized agents -- research, code review, UI planning, etc. -- by relaying messages between them. Agents never talk directly to each other; the orchestrator decides what information flows where and when, giving one actor full control over the entire workflow.
+
+![Architecture Overview](docs/images/architecture-overview.png)
+
+![Orchestrator-Controlled Relay Flow](docs/images/orchestrator-flow.png)
 
 ## Quick Start
 
 ```bash
-docker compose up -d
+# Start Postgres, Meddler server, and two mock agents
+docker compose up
 ```
 
-This starts:
-- **Postgres** - Message persistence
-- **Meddler server** - Transport layer at `http://localhost:3000`
-- **researcher** - Mock agent (echo mode)
-- **scrutinizer** - Mock agent (echo mode)
-
-## Connect Cursor as Orchestrator
-
-Add to `~/.cursor/mcp.json`:
+Cursor (`~/.cursor/mcp.json`):
 
 ```json
 {
@@ -28,7 +25,23 @@ Add to `~/.cursor/mcp.json`:
 }
 ```
 
-Then in Cursor:
+Zed (`settings.json`):
+
+```json
+{
+  "context_servers": {
+    "meddler": {
+      "transport": "sse",
+      "url": "http://localhost:3000/mcp/sse"
+    }
+  }
+}
+```
+
+Any other MCP client -- use `http://localhost:3000/mcp/sse`.
+
+Then ask your IDE:
+
 > "Use meddler to send 'hello world' to the researcher agent"
 
 ## CLI Setup
@@ -55,7 +68,7 @@ meddler send researcher "Hello!"
 
 ## MCP Tools
 
-Tools available to the orchestrator (via Cursor/Claude Desktop):
+Tools available to the orchestrator:
 
 | Tool | Description |
 |------|-------------|
@@ -114,9 +127,10 @@ cargo test
 # Run clippy (pedantic lints enabled)
 cargo clippy --all-targets
 
-# Start just postgres for local dev
-docker compose up -d postgres
-DATABASE_URL=postgres://meddler:meddler@localhost:5432/meddler cargo run -p meddler-server
+# Run docker compose
+docker compose down
+docker compose build --no-cache 
+docker compose up 
 ```
 
 ## License

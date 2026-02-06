@@ -14,7 +14,6 @@ use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 use meddler_core::types::{CreateMessage, RegisterAgent};
 
 use crate::app_state::AppState;
-use crate::session::SseEvent;
 
 /// Request body for registering a worker agent.
 #[derive(serde::Deserialize)]
@@ -74,12 +73,11 @@ pub async fn agent_sse(
 
     let rx = state.sessions.subscribe(&name).await;
     let stream = BroadcastStream::new(rx).filter_map(|result| {
-        result.ok().and_then(|evt| match evt {
-            SseEvent::AgentMessage(msg) => Some(Ok(Event::default()
+        result.ok().map(|msg| {
+            Ok(Event::default()
                 .event("message")
                 .json_data(&*msg)
-                .unwrap_or_else(|_| Event::default().data("error serializing message")))),
-            SseEvent::JsonRpc(_) => None, // Agent SSE doesn't handle JSON-RPC events
+                .unwrap_or_else(|_| Event::default().data("error serializing message")))
         })
     });
 
